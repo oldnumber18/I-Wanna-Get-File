@@ -29,7 +29,7 @@ void Server_dispose(int Goal) {
 				sprintf(Send_Info, "目前连接数:%d", Socket_Num - 1);
 				for (int i = 1; i < Socket_Num; i++) {
 					char Info[50] = { 0 };
-					sprintf(Info, "\n第 %d 个连接|%s ID:%d", i, Socket_Array[i]->Name, Socket_Array[i]->ID);
+					sprintf(Info, "\n第 %d 个连接|%s", i, Socket_Array[i]->Name);
 					strcat(Send_Info, Info);
 				}
 			}

@@ -54,7 +54,7 @@ void* Input(void *arg) {
 		if (Get_Info[0] == '/') {
 			// 输入了系统预购指令
 			if (strncmp(Get_Info, "/help", sizeof("/help")) == 0) {
-				warn_Information("妈的，你自己写的程序自己不会看代码???");
+				warn_Information("自己不会看代码???");
 				continue;
 			}
 			else if (strncmp(Get_Info, "/look", sizeof("/look")-1) == 0) {
@@ -160,7 +160,7 @@ void* Input(void *arg) {
 			if (strcmp(Get_Command, "RecvFile") == 0 && strcmp(Type, "F") == 0) {
 				FILE* fp = fopen(Get_Info, "rb");
 				if (fp == NULL) {
-					system_Information("打开目标文件失败！");
+					system_Information("open file error!");
 					continue;
 				}
 				else {
@@ -178,11 +178,11 @@ void* Input(void *arg) {
 					strcpy(Socket_Info->SendInfo.Info, Get_Info);
 					Socket_Info->Sure = TRUE;
 					char Info[500] = { 0 };
-					sprintf(Info,"即将发送文件。名字:%s 大小:%d Bites\n", Socket_Info->SendInfo.Info, Socket_Info->SendInfo.Size);
+					sprintf(Info,"Will Send File。Name:%s Size:%d Bites\n", Socket_Info->SendInfo.Info, Socket_Info->SendInfo.Size);
 					prompt_Information(Info);
 					for (int i = 0; i < 500 && Socket_Info->SaveFile.RecvFile != TRUE;i++) {
 						Sleep(10);
-						prompt_Information("等待发送文件信息成功...");
+						prompt_Information("Wait Send File...");
 						if (i == 499) {
 							warn_Information("对方接收文件信息失败！将退出发送");
 							goto start;
@@ -213,10 +213,10 @@ void* Input(void *arg) {
 					Socket_Info->SaveFile.FileSize = 0;
 					Socket_Info->SaveFile.GetSize = 0;
 					
-					success_Information("\n发送文件完毕！");
+					success_Information("\nSend File complete");
 					fclose(fp);
 					strcpy(Type, "I");
-					strcpy(Get_Info, "文件已全部发送完成");
+					strcpy(Get_Info, "Send File sucess.");
 				}
 			}
 			if (strcmp(Get_Command, "path") == 0 && strcmp(Type, "L") == 0) {
