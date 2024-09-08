@@ -1,4 +1,5 @@
 # I-Wanna-Get-File
-使用C++编写,类型:特洛伊木马病毒
-教程请下载图片使用:https://github.com/oldnumber18/I-Wanna-Get-File/blob/main/%E6%B6%88%E6%81%AF%E7%B1%BB%E5%9E%8B.jpg
-We Will Never Give up.
+使用C++编写。类型:特洛伊木马病毒
+花点时间随便写写点东西写出来的，主要用途是远程取文件，信息收集。
+缺点:1.没有进行免杀处理，可以自己进行免杀操作。2.没有写图形界面，懒得写了。3.我不会，不想学。
+优点：代码没有规范命名，能让你苦一下了。
